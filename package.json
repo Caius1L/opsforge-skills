@@ -1,0 +1,23 @@
+{
+  "name": "opsforge-skills",
+  "version": "0.1.0",
+  "description": "Internal OpsForge skill installer for local AI agents.",
+  "private": true,
+  "bin": {
+    "opsforge-skills": "bin/opsforge-skills.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "skills",
+    "!skills/**/__pycache__/**",
+    "!skills/**/*.pyc",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test && python3 -m unittest discover -s test -p '*_test.py'"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
