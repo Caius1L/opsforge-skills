@@ -20,22 +20,25 @@ Use this skill when the user asks to release, deploy, or publish the current ser
 
 ## First Use
 
-If no valid OpsForge session cache exists, ask the user for their OpsForge username and password. After login, cache only the session/cookie under `~/.opsforge-skills/cache`; do not store the plaintext password.
+Run the inspect pass first. If `auth.status` is `missing` or `session_cookie_only`, ask the user for their OpsForge username and password before presenting the final release summary. After a successful login, the helper writes credentials to `~/.opsforge-skills/config.json` with `0600` permissions and caches session cookies under `~/.opsforge-skills/cache`.
+
+Treat `config.json` as the long-lived local credential source. If a later OpsForge request returns 401/403, the helper uses this file to refresh the session once and retry the request without asking the user again.
 
 ## Helper
 
 Use `scripts/opsforge_release.py` internally for deterministic checks and API calls. Typical flow:
 
 1. Run an inspect/preflight pass from the service repository to resolve environment, branch, app name, and Git gates.
-2. Show the release confirmation summary to the user.
-3. After clear confirmation, run the release pass.
-4. Report the returned `buildId` and release-pool evidence.
+2. If credentials are missing, ask for username/password; do not treat credential input as release confirmation.
+3. Show the release confirmation summary to the user, including app, branch, environment, Git status, and auth status.
+4. After clear confirmation, run the release pass.
+5. Report the returned `buildId` and release-pool evidence.
 
 ## Required Gates
 
 - Current directory must be a Git repository.
 - Current branch must not be detached.
-- Worktree must not contain uncommitted changes.
+- Worktree must not contain uncommitted changes unless the user explicitly requests `空发`. For `空发`, rerun the helper with `--empty-release`; this ignores local uncommitted/untracked files and publishes the current remote branch only.
 - Current branch must not contain unpushed commits.
 - Production environment aliases such as `生产`, `线上`, `正式环境`, `prod`, `production`, or `tencent-prod` must be rejected.
 - Existing release-pool changes must be preserved. If the current branch is already in the target pool, reuse that change and do not create another one.

@@ -21,7 +21,9 @@ from typing import Any
 
 BASE_URL = "https://opsforge.byai-inc.com"
 SOURCE_PROFILE_ENV_CODE = "tencent-prod"
-CACHE_DIR = Path.home() / ".opsforge-skills" / "cache"
+CONFIG_DIR = Path.home() / ".opsforge-skills"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+CACHE_DIR = CONFIG_DIR / "cache"
 COOKIE_FILE = CACHE_DIR / "opsforge-cookies.txt"
 PROD_ENV_ALIASES = (
     "tencent-prod",
@@ -46,6 +48,7 @@ CANCEL_WORDS = ("取消", "不要", "先等等", "停止", "别发", "不发")
 SENSITIVE_PATTERN = re.compile(
     r"(?i)\b(password|passwd|token|secret|authorization|cookie|set-cookie)\b\s*[:=]\s*[^,\s;}]+"
 )
+SENSITIVE_KEYS = {"password", "passwd", "token", "secret", "authorization", "cookie", "set-cookie"}
 
 
 class OpsForgeSkillError(RuntimeError):
@@ -57,7 +60,13 @@ class OpsForgeSkillError(RuntimeError):
 
 def sanitize(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: sanitize(val) for key, val in value.items()}
+        sanitized = {}
+        for key, val in value.items():
+            if str(key).lower() in SENSITIVE_KEYS:
+                sanitized[key] = "<redacted>"
+            else:
+                sanitized[key] = sanitize(val)
+        return sanitized
     if isinstance(value, list):
         return [sanitize(item) for item in value]
     if isinstance(value, str):
@@ -151,15 +160,22 @@ def run_git(repo_path: str, args: list[str], *, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
-def collect_git_context(repo_path: str) -> dict[str, Any]:
+def collect_git_context(repo_path: str, *, empty_release: bool = False) -> dict[str, Any]:
     root = run_git(repo_path, ["rev-parse", "--show-toplevel"])
     branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
     if branch == "HEAD":
         raise OpsForgeSkillError("DETACHED_HEAD", "当前仓库处于 detached HEAD，无法发布")
 
     status = run_git(root, ["status", "--porcelain"])
-    if status:
-        raise OpsForgeSkillError("DIRTY_WORKTREE", "当前工作区存在未提交改动，请提交或清理后再发布")
+    local_changes_ignored: list[str] = []
+    if status and not empty_release:
+        raise OpsForgeSkillError(
+            "DIRTY_WORKTREE",
+            "当前工作区存在未提交或未跟踪文件。请提交/清理后再发布；如果确认这些本地改动不参与本次发布，可以回复“空发”，skill 将基于远端当前分支继续发布。",
+            {"status": status.splitlines()},
+        )
+    if status and empty_release:
+        local_changes_ignored = status.splitlines()
 
     remote = run_git(root, ["remote", "get-url", "origin"])
     app_name = infer_app_name_from_remote(remote)
@@ -177,12 +193,68 @@ def collect_git_context(repo_path: str) -> dict[str, Any]:
         "branch": branch,
         "remote": remote,
         "appName": app_name,
+        "emptyRelease": bool(empty_release),
+        "localChangesIgnored": local_changes_ignored,
     }
 
 
+def ensure_config_dir() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)
+
+
 def ensure_cache_dir() -> None:
+    ensure_config_dir()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(CACHE_DIR, 0o700)
+
+
+def save_credentials(username: str, password: str) -> None:
+    if not username or not password:
+        raise OpsForgeSkillError("AUTH_REQUIRED", "OpsForge 需要登录，请输入用户名和密码。")
+    ensure_config_dir()
+    tmp_file = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.tmp")
+    fd = os.open(tmp_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fp:
+        json.dump({"username": username, "password": password}, fp, ensure_ascii=False, indent=2)
+        fp.write("\n")
+    os.replace(tmp_file, CONFIG_FILE)
+    os.chmod(CONFIG_FILE, 0o600)
+
+
+def load_credentials() -> dict[str, str] | None:
+    if not CONFIG_FILE.exists():
+        return None
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    username = str(payload.get("username") or payload.get("userName") or "").strip()
+    password = str(payload.get("password") or "").strip()
+    if not username or not password:
+        return None
+    return {"username": username, "password": password}
+
+
+def auth_cache_status() -> dict[str, Any]:
+    has_credentials = load_credentials() is not None
+    has_cookie = COOKIE_FILE.exists()
+    if has_credentials:
+        status = "credential_config_present"
+    elif has_cookie:
+        status = "session_cookie_only"
+    else:
+        status = "missing"
+    return {
+        "status": status,
+        "hasCredentialConfig": has_credentials,
+        "hasSessionCookie": has_cookie,
+        "configPath": str(CONFIG_FILE),
+        "cookiePath": str(COOKIE_FILE),
+    }
 
 
 class OpsForgeClient:
@@ -203,7 +275,15 @@ class OpsForgeClient:
         self.cookie_jar.save(ignore_discard=True, ignore_expires=True)
         os.chmod(COOKIE_FILE, 0o600)
 
-    def request(self, method: str, path: str, body: Any | None = None, query: dict[str, Any] | None = None) -> Any:
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: Any | None = None,
+        query: dict[str, Any] | None = None,
+        *,
+        allow_auth_retry: bool = True,
+    ) -> Any:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -218,7 +298,14 @@ class OpsForgeClient:
             with self.opener.open(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
+            if exc.code in (401, 403):
+                if allow_auth_retry and self.refresh_session_from_config():
+                    return self.request(method, path, body, query, allow_auth_retry=False)
+                raise OpsForgeSkillError("AUTH_REQUIRED", "OpsForge 需要登录，请输入用户名和密码。")
             raise OpsForgeSkillError("HTTP_ERROR", f"OpsForge HTTP {exc.code}: {sanitize(detail)}")
         except urllib.error.URLError as exc:
             raise OpsForgeSkillError("HTTP_ERROR", f"OpsForge request failed: {sanitize(str(exc))}")
@@ -230,12 +317,29 @@ class OpsForgeClient:
         except json.JSONDecodeError as exc:
             raise OpsForgeSkillError("HTTP_RESPONSE_INVALID", f"OpsForge returned non-JSON response: {exc}")
 
-    def login(self, username: str, password: str) -> Any:
+    def login(self, username: str, password: str, *, persist: bool = True) -> Any:
         if not username or not password:
-            raise OpsForgeSkillError("AUTH_REQUIRED", "OpsForge username/password are required")
-        result = self.request("POST", "/api/user/login", {"userName": username, "password": password})
+            raise OpsForgeSkillError("AUTH_REQUIRED", "OpsForge 需要登录，请输入用户名和密码。")
+        result = self.request(
+            "POST",
+            "/api/user/login",
+            {"userName": username, "password": password},
+            allow_auth_retry=False,
+        )
         self.save_cookies()
+        if persist:
+            save_credentials(username, password)
         return result
+
+    def refresh_session_from_config(self) -> bool:
+        credentials = load_credentials()
+        if not credentials:
+            return False
+        try:
+            self.login(credentials["username"], credentials["password"], persist=False)
+            return True
+        except OpsForgeSkillError:
+            return False
 
     def get_profile(self, app_name: str, env_code: str) -> dict[str, Any]:
         return require_success(self.request("GET", f"/api/v1/app/{quote(app_name)}/profile/{quote(env_code)}"))
@@ -330,30 +434,39 @@ def merge_pool(pool: list[dict[str, Any]], current: dict[str, Any]) -> list[dict
     return merged
 
 
-def build_preflight(intent_text: str, repo_path: str) -> dict[str, Any]:
+def build_preflight(intent_text: str, repo_path: str, *, empty_release: bool = False) -> dict[str, Any]:
     env_code = resolve_env_code(intent_text)
-    git_context = collect_git_context(repo_path)
+    git_context = collect_git_context(repo_path, empty_release=empty_release)
     return {
         "ok": True,
         "baseUrl": BASE_URL,
         "envCode": env_code,
+        "auth": auth_cache_status(),
         **git_context,
     }
 
 
 def run_inspect(args: argparse.Namespace) -> dict[str, Any]:
-    return build_preflight(args.intent_text, args.repo_path)
+    context = build_preflight(args.intent_text, args.repo_path, empty_release=args.empty_release)
+    if args.username:
+        password = args.password or getpass.getpass("OpsForge password: ")
+        client = OpsForgeClient(timeout=args.timeout)
+        client.login(args.username, password)
+        context["auth"] = auth_cache_status()
+    return context
 
 
 def run_release(args: argparse.Namespace) -> dict[str, Any]:
     if not is_release_confirmation(args.confirmation):
         raise OpsForgeSkillError("CONFIRMATION_REQUIRED", "发布前必须获得用户明确确认")
 
-    context = build_preflight(args.intent_text, args.repo_path)
+    context = build_preflight(args.intent_text, args.repo_path, empty_release=args.empty_release)
     client = OpsForgeClient(timeout=args.timeout)
     if args.username:
         password = args.password or getpass.getpass("OpsForge password: ")
         client.login(args.username, password)
+    elif load_credentials() and not COOKIE_FILE.exists():
+        client.refresh_session_from_config()
 
     app_name = args.app_name or context["appName"]
     env_code = context["envCode"]
@@ -404,6 +517,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--password", default="")
     parser.add_argument("--app-name", default="")
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--empty-release", action="store_true")
     return parser.parse_args(argv)
 
 

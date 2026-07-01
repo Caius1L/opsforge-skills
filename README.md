@@ -25,12 +25,15 @@ After installation, open a service repository in your local AI agent and ask:
 
 The skill uses the current Git repository and branch, infers the OpsForge app from `origin`, checks release gates, asks for confirmation, and then releases through OpsForge.
 
+On first use, the agent asks for the OpsForge username and password. After a successful login, credentials are saved locally in `~/.opsforge-skills/config.json` so expired sessions can be refreshed automatically.
+
 ## Safety
 
 - Production releases are blocked.
 - OpsForge base URL is fixed to `https://opsforge.byai-inc.com`.
-- Usernames and passwords are never bundled in this repository.
-- The release helper caches only session cookies under `~/.opsforge-skills/cache`.
+- Usernames and passwords are never bundled in this repository or printed in logs.
+- Usernames and passwords are saved only on the user's machine in `~/.opsforge-skills/config.json`; the file is written with `0600` permissions.
+- Session cookies are cached under `~/.opsforge-skills/cache`.
 - Existing OpsForge release-pool changes are preserved.
 
 ## Development
