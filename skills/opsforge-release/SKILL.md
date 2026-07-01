@@ -15,12 +15,12 @@ Use this skill when the user asks to release, deploy, or publish the current ser
 - Infer the OpsForge app name from `git remote get-url origin`; ask for the service name only if inference fails.
 - Use the fixed OpsForge base URL `https://opsforge.byai-inc.com`.
 - Reject production release intent immediately. Do not confirm, inspect release pools, or call OpsForge release APIs for production.
-- Require a human confirmation before triggering release. If the user has not replied with a clear release confirmation such as `发布` or `确认发布`, stop after presenting the summary.
+- Treat the user's non-production release request as release authorization. Do not ask for a second `确认发布` reply.
 - Never print passwords, cookies, tokens, or authorization headers.
 
 ## First Use
 
-Run the inspect pass first. If `auth.status` is `missing` or `session_cookie_only`, ask the user for their OpsForge username and password before presenting the final release summary. After a successful login, the helper writes credentials to `~/.opsforge-skills/config.json` with `0600` permissions and caches session cookies under `~/.opsforge-skills/cache`.
+Run the inspect pass first. If `auth.status` is `missing` or `session_cookie_only`, ask the user for their OpsForge username and password, then continue the release directly after successful login. After a successful login, the helper writes credentials to `~/.opsforge-skills/config.json` with `0600` permissions and caches session cookies under `~/.opsforge-skills/cache`.
 
 Treat `config.json` as the long-lived local credential source. If a later OpsForge request returns 401/403, the helper uses this file to refresh the session once and retry the request without asking the user again.
 
@@ -29,10 +29,9 @@ Treat `config.json` as the long-lived local credential source. If a later OpsFor
 Use `scripts/opsforge_release.py` internally for deterministic checks and API calls. Typical flow:
 
 1. Run an inspect/preflight pass from the service repository to resolve environment, branch, app name, and Git gates. If `origin/<current-branch>` does not exist, the helper runs `git push -u origin HEAD:<current-branch>` before continuing.
-2. If credentials are missing, ask for username/password; do not treat credential input as release confirmation.
-3. Show a concise release confirmation summary to the user, including app, branch, environment, auth status, whether the remote branch was auto-created, and one sentence that local uncommitted files will not be released when relevant.
-4. After clear confirmation, run the release pass.
-5. Report a concise result: app, environment, branch, changeId, and OpsForge returned id. Do not list release-pool change IDs, risk tables, or confidence commentary unless the user asks for troubleshooting details.
+2. If credentials are missing, ask for username/password and continue directly after login succeeds.
+3. Run the release pass without requiring a second confirmation message.
+4. Report a concise result: app, environment, branch, changeId, and OpsForge returned id. Do not list release-pool change IDs, risk tables, or confidence commentary unless the user asks for troubleshooting details.
 
 ## Required Gates
 

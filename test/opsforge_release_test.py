@@ -41,11 +41,6 @@ class OpsForgeReleaseTest(unittest.TestCase):
             "sop-web-service",
         )
 
-    def test_confirmation_intent(self):
-        self.assertTrue(ops.is_release_confirmation("确认发布"))
-        self.assertTrue(ops.is_release_confirmation("发布"))
-        self.assertFalse(ops.is_release_confirmation("先等等"))
-
     def test_finds_pool_change_by_branch(self):
         pool = [
             {"changeId": "a", "branch": "feature/other"},
@@ -245,6 +240,67 @@ class OpsForgeReleaseTest(unittest.TestCase):
 
             self.assertEqual(result["auth"]["status"], "credential_config_present")
             self.assertEqual(ops.load_credentials(), {"username": "alice", "password": "secret"})
+
+    def test_release_runs_without_confirmation(self):
+        class FakeClient:
+            def __init__(self, timeout):
+                self.timeout = timeout
+                self.created = False
+
+            def get_profile(self, app_name, env_code):
+                return {"defaultBranch": "master"}
+
+            def get_pool_changes(self, app_name, env_code):
+                return []
+
+            def list_changes(self, app_name, branch):
+                if not self.created:
+                    return []
+                return [{"changeId": "change-1", "branch": branch}]
+
+            def create_change(self, app_name, branch, base_branch):
+                self.created = True
+                return {"ok": True}
+
+            def release_changes(self, app_name, env_code, changes):
+                return {"releaseId": "release-1", "changes": len(changes)}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.use_temp_opsforge_home(tmpdir)
+            repo = pathlib.Path(tmpdir) / "repo"
+            remote = pathlib.Path(tmpdir) / "remote.git"
+            repo.mkdir()
+            ops.run_git(str(pathlib.Path(tmpdir)), ["init", "--bare", str(remote)])
+            ops.run_git(str(repo), ["init"])
+            ops.run_git(str(repo), ["config", "user.email", "tester@example.com"])
+            ops.run_git(str(repo), ["config", "user.name", "Tester"])
+            ops.run_git(str(repo), ["checkout", "-b", "test_skill_v2"])
+            (repo / "README.md").write_text("initial\n", encoding="utf-8")
+            ops.run_git(str(repo), ["add", "README.md"])
+            ops.run_git(str(repo), ["commit", "-m", "init"])
+            ops.run_git(str(repo), ["remote", "add", "origin", str(remote)])
+
+            original_client = ops.OpsForgeClient
+            ops.OpsForgeClient = FakeClient
+            try:
+                result = ops.run_release(
+                    Namespace(
+                        intent_text="发布到腾讯云测试",
+                        repo_path=str(repo),
+                        empty_release=False,
+                        username="",
+                        password="",
+                        timeout=30,
+                        app_name="",
+                        confirmation="",
+                    )
+                )
+            finally:
+                ops.OpsForgeClient = original_client
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["changeId"], "change-1")
+            self.assertEqual(result["releaseResult"], {"releaseId": "release-1", "changes": 1})
 
 
 if __name__ == "__main__":

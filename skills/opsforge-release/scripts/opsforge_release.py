@@ -43,8 +43,6 @@ ENV_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tencent-pre", ("腾讯云预发", "预发环境", "发预发", "预发")),
     ("tencent-xjp-pre", ("新加坡预发", "xjp-pre", "sg-pre", "tencent-xjp-pre")),
 )
-CONFIRM_WORDS = ("确认发布", "发布", "继续发布", "确认", "继续", "可以")
-CANCEL_WORDS = ("取消", "不要", "先等等", "停止", "别发", "不发")
 SENSITIVE_PATTERN = re.compile(
     r"(?i)\b(password|passwd|token|secret|authorization|cookie|set-cookie)\b\s*[:=]\s*[^,\s;}]+"
 )
@@ -94,15 +92,6 @@ def resolve_env_code(text: str) -> str:
                 return env_code
 
     raise OpsForgeSkillError("ENV_NOT_RESOLVED", "无法识别发布环境")
-
-
-def is_release_confirmation(text: str) -> bool:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return False
-    if any(word in normalized for word in CANCEL_WORDS):
-        return False
-    return any(word in normalized for word in CONFIRM_WORDS)
 
 
 def infer_app_name_from_remote(remote_url: str) -> str:
@@ -483,9 +472,6 @@ def run_inspect(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_release(args: argparse.Namespace) -> dict[str, Any]:
-    if not is_release_confirmation(args.confirmation):
-        raise OpsForgeSkillError("CONFIRMATION_REQUIRED", "发布前必须获得用户明确确认")
-
     context = build_preflight(args.intent_text, args.repo_path, empty_release=args.empty_release)
     client = OpsForgeClient(timeout=args.timeout)
     if args.username:
@@ -538,7 +524,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--action", choices=("inspect", "release"), default="inspect")
     parser.add_argument("--intent-text", required=True)
     parser.add_argument("--repo-path", default=".")
-    parser.add_argument("--confirmation", default="")
+    parser.add_argument("--confirmation", default="", help=argparse.SUPPRESS)
     parser.add_argument("--username", default="")
     parser.add_argument("--password", default="")
     parser.add_argument("--app-name", default="")

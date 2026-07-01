@@ -1,6 +1,6 @@
 {
   "name": "opsforge-skills",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Internal OpsForge skill installer for local AI agents.",
   "private": true,
   "bin": {

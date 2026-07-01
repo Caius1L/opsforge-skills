@@ -23,7 +23,7 @@ After installation, open a service repository in your local AI agent and ask:
 发布到腾讯云测试
 ```
 
-The skill uses the current Git repository and branch, infers the OpsForge app from `origin`, checks release gates, asks for confirmation, and then releases through OpsForge.
+The skill uses the current Git repository and branch, infers the OpsForge app from `origin`, checks release gates, and releases through OpsForge without asking for a second confirmation.
 
 On first use, the agent asks for the OpsForge username and password. After a successful login, credentials are saved locally in `~/.opsforge-skills/config.json` so expired sessions can be refreshed automatically.
 
