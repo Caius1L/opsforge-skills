@@ -27,6 +27,14 @@ The skill uses the current Git repository and branch, infers the OpsForge app fr
 
 On first use, the agent asks for the OpsForge username and password. After a successful login, credentials are saved locally in `~/.opsforge-skills/config.json` so expired sessions can be refreshed automatically.
 
+The release target is always the remote branch with the same name as the current branch. Local uncommitted or untracked files are ignored and are not released. If the remote branch does not exist, the helper creates it with:
+
+```bash
+git push -u origin HEAD:<current-branch>
+```
+
+That command only pushes the current committed `HEAD`; it does not stage, commit, or push local worktree changes.
+
 ## Safety
 
 - Production releases are blocked.
@@ -34,6 +42,7 @@ On first use, the agent asks for the OpsForge username and password. After a suc
 - Usernames and passwords are never bundled in this repository or printed in logs.
 - Usernames and passwords are saved only on the user's machine in `~/.opsforge-skills/config.json`; the file is written with `0600` permissions.
 - Session cookies are cached under `~/.opsforge-skills/cache`.
+- Local uncommitted or untracked files are never pushed by the helper.
 - Existing OpsForge release-pool changes are preserved.
 
 ## Development

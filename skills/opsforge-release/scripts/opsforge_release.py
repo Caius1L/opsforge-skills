@@ -160,41 +160,67 @@ def run_git(repo_path: str, args: list[str], *, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
+def remote_branch_head(repo_path: str, branch: str) -> str:
+    output = run_git(repo_path, ["ls-remote", "--heads", "origin", branch])
+    if not output:
+        return ""
+    return output.split()[0].strip()
+
+
+def ensure_remote_branch(repo_path: str, branch: str) -> dict[str, Any]:
+    local_head = run_git(repo_path, ["rev-parse", "HEAD"])
+    remote_head = remote_branch_head(repo_path, branch)
+    if remote_head:
+        if remote_head != local_head:
+            raise OpsForgeSkillError(
+                "BRANCH_NOT_PUSHED",
+                f"当前本地 HEAD 与 origin/{branch} 不一致。skill 默认只发布远端当前分支；请先 push 后再发布。",
+                {"localHead": local_head, "remoteHead": remote_head, "branch": branch},
+            )
+        return {
+            "remoteBranchExists": True,
+            "remoteBranchAutoPushed": False,
+            "pushedRefspec": "",
+            "remoteHead": remote_head,
+            "localHead": local_head,
+        }
+
+    refspec = f"HEAD:{branch}"
+    run_git(repo_path, ["push", "-u", "origin", refspec])
+    return {
+        "remoteBranchExists": True,
+        "remoteBranchAutoPushed": True,
+        "pushedRefspec": refspec,
+        "remoteHead": local_head,
+        "localHead": local_head,
+    }
+
+
 def collect_git_context(repo_path: str, *, empty_release: bool = False) -> dict[str, Any]:
     root = run_git(repo_path, ["rev-parse", "--show-toplevel"])
     branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
     if branch == "HEAD":
         raise OpsForgeSkillError("DETACHED_HEAD", "当前仓库处于 detached HEAD，无法发布")
+    run_git(root, ["check-ref-format", "--branch", branch])
 
     status = run_git(root, ["status", "--porcelain"])
-    local_changes_ignored: list[str] = []
-    if status and not empty_release:
-        raise OpsForgeSkillError(
-            "DIRTY_WORKTREE",
-            "当前工作区存在未提交或未跟踪文件。请提交/清理后再发布；如果确认这些本地改动不参与本次发布，可以回复“空发”，skill 将基于远端当前分支继续发布。",
-            {"status": status.splitlines()},
-        )
-    if status and empty_release:
-        local_changes_ignored = status.splitlines()
+    local_changes_ignored = status.splitlines() if status else []
 
     remote = run_git(root, ["remote", "get-url", "origin"])
     app_name = infer_app_name_from_remote(remote)
     if not app_name:
         raise OpsForgeSkillError("APP_NOT_RESOLVED", "无法从 git remote 推断服务名")
 
-    upstream = run_git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], check=False)
-    if upstream:
-        ahead = run_git(root, ["rev-list", "--count", f"{upstream}..HEAD"])
-        if ahead and int(ahead) > 0:
-            raise OpsForgeSkillError("BRANCH_NOT_PUSHED", "当前分支存在未 push commit，请先 push 后再发布")
+    remote_branch = ensure_remote_branch(root, branch)
 
     return {
         "repoPath": root,
         "branch": branch,
         "remote": remote,
         "appName": app_name,
-        "emptyRelease": bool(empty_release),
+        "emptyRelease": True,
         "localChangesIgnored": local_changes_ignored,
+        **remote_branch,
     }
 
 
@@ -501,8 +527,8 @@ def run_release(args: argparse.Namespace) -> dict[str, Any]:
         "appName": app_name,
         "changeSource": change_source,
         "changeId": change_id_of(current),
-        "poolBeforeChangeIds": [change_id_of(change) for change in pool_before if change_id_of(change)],
-        "poolTargetChangeIds": [change_id_of(change) for change in pool_target if change_id_of(change)],
+        "poolBeforeChangeCount": len([change for change in pool_before if change_id_of(change)]),
+        "poolTargetChangeCount": len([change for change in pool_target if change_id_of(change)]),
         "releaseResult": sanitize(release_result),
     }
 
@@ -517,7 +543,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--password", default="")
     parser.add_argument("--app-name", default="")
     parser.add_argument("--timeout", type=int, default=30)
-    parser.add_argument("--empty-release", action="store_true")
+    parser.add_argument("--empty-release", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 

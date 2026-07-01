@@ -11,7 +11,7 @@ Use this skill when the user asks to release, deploy, or publish the current ser
 
 - Treat the user's natural-language release request as the entrypoint. Do not ask the user to run low-level helper commands.
 - Use the current working directory as the service repository.
-- Use the current Git branch as the release branch.
+- Release the remote branch with the same name as the current Git branch. Local uncommitted or untracked files are never part of the release.
 - Infer the OpsForge app name from `git remote get-url origin`; ask for the service name only if inference fails.
 - Use the fixed OpsForge base URL `https://opsforge.byai-inc.com`.
 - Reject production release intent immediately. Do not confirm, inspect release pools, or call OpsForge release APIs for production.
@@ -28,17 +28,18 @@ Treat `config.json` as the long-lived local credential source. If a later OpsFor
 
 Use `scripts/opsforge_release.py` internally for deterministic checks and API calls. Typical flow:
 
-1. Run an inspect/preflight pass from the service repository to resolve environment, branch, app name, and Git gates.
+1. Run an inspect/preflight pass from the service repository to resolve environment, branch, app name, and Git gates. If `origin/<current-branch>` does not exist, the helper runs `git push -u origin HEAD:<current-branch>` before continuing.
 2. If credentials are missing, ask for username/password; do not treat credential input as release confirmation.
-3. Show the release confirmation summary to the user, including app, branch, environment, Git status, and auth status.
+3. Show a concise release confirmation summary to the user, including app, branch, environment, auth status, whether the remote branch was auto-created, and one sentence that local uncommitted files will not be released when relevant.
 4. After clear confirmation, run the release pass.
-5. Report the returned `buildId` and release-pool evidence.
+5. Report a concise result: app, environment, branch, changeId, and OpsForge returned id. Do not list release-pool change IDs, risk tables, or confidence commentary unless the user asks for troubleshooting details.
 
 ## Required Gates
 
 - Current directory must be a Git repository.
 - Current branch must not be detached.
-- Worktree must not contain uncommitted changes unless the user explicitly requests `空发`. For `空发`, rerun the helper with `--empty-release`; this ignores local uncommitted/untracked files and publishes the current remote branch only.
-- Current branch must not contain unpushed commits.
+- Local uncommitted or untracked files do not block release and are not pushed. The helper only pushes the current `HEAD` commit when it needs to create a missing remote branch.
+- If `origin/<current-branch>` does not exist, create it with `git push -u origin HEAD:<current-branch>`. This only pushes committed objects reachable from `HEAD`; it never stages, commits, or pushes worktree changes.
+- If `origin/<current-branch>` exists but does not match local `HEAD`, stop and ask the user to push deliberately before release.
 - Production environment aliases such as `生产`, `线上`, `正式环境`, `prod`, `production`, or `tencent-prod` must be rejected.
 - Existing release-pool changes must be preserved. If the current branch is already in the target pool, reuse that change and do not create another one.

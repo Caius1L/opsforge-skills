@@ -85,26 +85,77 @@ class OpsForgeReleaseTest(unittest.TestCase):
             {"password": "<redacted>", "nested": {"token": "<redacted>"}, "safe": "value"},
         )
 
-    def test_collect_git_context_allows_empty_release_for_dirty_worktree(self):
+    def test_collect_git_context_defaults_to_remote_branch_release_with_dirty_worktree(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            repo = pathlib.Path(tmpdir)
+            base = pathlib.Path(tmpdir)
+            remote = base / "remote.git"
+            repo = base / "repo"
+            repo.mkdir()
+            ops.run_git(str(base), ["init", "--bare", str(remote)])
             ops.run_git(str(repo), ["init"])
             ops.run_git(str(repo), ["config", "user.email", "tester@example.com"])
             ops.run_git(str(repo), ["config", "user.name", "Tester"])
             (repo / "README.md").write_text("initial\n", encoding="utf-8")
             ops.run_git(str(repo), ["add", "README.md"])
             ops.run_git(str(repo), ["commit", "-m", "init"])
-            ops.run_git(str(repo), ["remote", "add", "origin", "git@github.com:org/sop.git"])
+            ops.run_git(str(repo), ["remote", "add", "origin", str(remote)])
             (repo / "local-only.txt").write_text("dirty\n", encoding="utf-8")
 
-            with self.assertRaises(ops.OpsForgeSkillError) as ctx:
-                ops.collect_git_context(str(repo))
-            self.assertEqual(ctx.exception.error_type, "DIRTY_WORKTREE")
-            self.assertIn("空发", str(ctx.exception))
-
-            context = ops.collect_git_context(str(repo), empty_release=True)
+            context = ops.collect_git_context(str(repo))
             self.assertTrue(context["emptyRelease"])
             self.assertIn("?? local-only.txt", context["localChangesIgnored"])
+
+    def test_collect_git_context_auto_pushes_missing_remote_branch_without_uncommitted_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = pathlib.Path(tmpdir)
+            remote = base / "remote.git"
+            repo = base / "repo"
+            repo.mkdir()
+            ops.run_git(str(base), ["init", "--bare", str(remote)])
+            ops.run_git(str(repo), ["init"])
+            ops.run_git(str(repo), ["config", "user.email", "tester@example.com"])
+            ops.run_git(str(repo), ["config", "user.name", "Tester"])
+            ops.run_git(str(repo), ["checkout", "-b", "test_skill_v2"])
+            (repo / "README.md").write_text("committed\n", encoding="utf-8")
+            ops.run_git(str(repo), ["add", "README.md"])
+            ops.run_git(str(repo), ["commit", "-m", "init"])
+            ops.run_git(str(repo), ["remote", "add", "origin", str(remote)])
+            (repo / "local-only.txt").write_text("must not be pushed\n", encoding="utf-8")
+
+            context = ops.collect_git_context(str(repo))
+
+            self.assertTrue(context["remoteBranchExists"])
+            self.assertTrue(context["remoteBranchAutoPushed"])
+            self.assertEqual(context["pushedRefspec"], "HEAD:test_skill_v2")
+            tree = ops.run_git(
+                str(repo),
+                ["--git-dir", str(remote), "ls-tree", "-r", "--name-only", "refs/heads/test_skill_v2"],
+            )
+            self.assertIn("README.md", tree.splitlines())
+            self.assertNotIn("local-only.txt", tree.splitlines())
+
+    def test_collect_git_context_does_not_push_when_remote_branch_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = pathlib.Path(tmpdir)
+            remote = base / "remote.git"
+            repo = base / "repo"
+            repo.mkdir()
+            ops.run_git(str(base), ["init", "--bare", str(remote)])
+            ops.run_git(str(repo), ["init"])
+            ops.run_git(str(repo), ["config", "user.email", "tester@example.com"])
+            ops.run_git(str(repo), ["config", "user.name", "Tester"])
+            ops.run_git(str(repo), ["checkout", "-b", "test_skill_v2"])
+            (repo / "README.md").write_text("committed\n", encoding="utf-8")
+            ops.run_git(str(repo), ["add", "README.md"])
+            ops.run_git(str(repo), ["commit", "-m", "init"])
+            ops.run_git(str(repo), ["remote", "add", "origin", str(remote)])
+            ops.run_git(str(repo), ["push", "-u", "origin", "HEAD:test_skill_v2"])
+
+            context = ops.collect_git_context(str(repo))
+
+            self.assertTrue(context["remoteBranchExists"])
+            self.assertFalse(context["remoteBranchAutoPushed"])
+            self.assertEqual(context["pushedRefspec"], "")
 
     def test_request_refreshes_session_from_saved_config_after_403(self):
         class FakeResponse:
@@ -172,7 +223,9 @@ class OpsForgeReleaseTest(unittest.TestCase):
             (repo / "README.md").write_text("initial\n", encoding="utf-8")
             ops.run_git(str(repo), ["add", "README.md"])
             ops.run_git(str(repo), ["commit", "-m", "init"])
-            ops.run_git(str(repo), ["remote", "add", "origin", "git@github.com:org/sop.git"])
+            remote = pathlib.Path(tmpdir) / "remote.git"
+            ops.run_git(str(pathlib.Path(tmpdir)), ["init", "--bare", str(remote)])
+            ops.run_git(str(repo), ["remote", "add", "origin", str(remote)])
 
             original_client = ops.OpsForgeClient
             ops.OpsForgeClient = FakeClient
